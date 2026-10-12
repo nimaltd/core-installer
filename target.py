@@ -71,6 +71,10 @@ class Target:
     # What --ide can choose from. None of them means there is no --ide.
     integrations = ()
 
+    # The key under requires that gives the oldest of this installer a library
+    # works with, such as installer for stm32-installer.
+    requires_key = "installer"
+
     # Said when no project file was recognised, and what to do instead.
     no_project = "No project file was recognised here, so nothing was registered."
     no_project_hint = "Add the folder to your include paths and the .c files to your build."
@@ -79,6 +83,13 @@ class Target:
     def update_command(self):
         """The line that updates this installer."""
         return f"pip install --upgrade {self.name}"
+
+    def default_folder(self, library):
+        """The folder offered for a library installed for the first time."""
+        return library.name
+
+    def read_manifest(self, manifest, data):
+        """Read this target's own part of installer.yml onto manifest, once the rest is read."""
 
     def read_requirements(self, requirements, data):
         """Read what this kind of project checks from requires, onto requirements."""

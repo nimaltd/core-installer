@@ -664,7 +664,7 @@ def _settle_options(requested, project_root, args):
 
 def _default_folder(library, project_root):
     """
-    The folder offered for a library: where it already is, or its name.
+    The folder offered for a library: where it already is, or the target's choice.
 
     Offering the name for a library installed somewhere else, such as Libs/x,
     used to put a second copy of it in ./x on an update.
@@ -674,7 +674,7 @@ def _default_folder(library, project_root):
     if isinstance(recorded, dict) and recorded.get("folder"):
         return recorded["folder"]
 
-    return library.name
+    return target.current.default_folder(library)
 
 
 def _install_step(step, project_root, folder, only_ide):

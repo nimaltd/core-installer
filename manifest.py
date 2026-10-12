@@ -98,14 +98,18 @@ def check_installer(data):
     installer = target.current
     requires = data.get("requires")
 
-    if not isinstance(requires, dict) or requires.get("installer") is None:
+    # Each installer has a key of its own, so one installer.yml can say which
+    # stm32-installer and which zephyr-installer it needs.
+    key = installer.requires_key
+
+    if not isinstance(requires, dict) or requires.get(key) is None:
         return
 
-    wanted = _version_tuple(requires["installer"])
+    wanted = _version_tuple(requires[key])
 
     if wanted is None:
         raise ManifestError(
-            f"requires.installer is {requires['installer']!r}. Write it as three numbers, "
+            f"requires.{key} is {requires[key]!r}. Write it as three numbers, "
             "like 1.1.0. YAML reads an unquoted 1.10 as the decimal number 1.1."
         )
 
@@ -499,6 +503,10 @@ class Manifest:
 
             if not found and item not in ("LICENSE.md", "NOTICE"):
                 self.empty_extras.append(str(item))
+
+        # Last, so the target sees the library as read: a section of its own,
+        # such as zephyr for zephyr-installer, comes from here.
+        target.current.read_manifest(self, data)
 
     def choose(self, names):
         """Take these options in this install, and no others."""

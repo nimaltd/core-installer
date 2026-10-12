@@ -39,12 +39,20 @@ from .core.target import Target
 
 class Example(Target):
     name = "example-installer"           # the command, as messages name it
-    version = "1.0.0"                    # what requires.installer is compared with
+    version = "1.0.0"                    # what requires.example_installer is compared with
+    requires_key = "example_installer"   # the key under requires for that; default installer
     record_name = ".example-installer.json"  # the record of what was installed
     project = "example project"          # the user's project, in the help
     integrations = ()                    # what --ide can pick; none means no --ide
     no_project = "No project file was recognised here."  # said when nothing matched
     no_project_hint = "Add the folder to your build."    # and what to do instead
+
+    def default_folder(self, library):
+        """The folder offered for a library installed for the first time."""
+        return library.name
+
+    def read_manifest(self, manifest, data):
+        """Read this target's own section of installer.yml onto manifest."""
 
     def read_requirements(self, requirements, data):
         """Read this target's part of requires onto requirements."""
