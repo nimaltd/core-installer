@@ -30,11 +30,16 @@ jobs:
         run: python test/run_tests.py
 
   # Every installer is this core plus its own part. A change here is run through
-  # stm32-installer's whole suite too, with this core in place of the one it
-  # pins, so it cannot break the installer without this failing first.
-  stm32-installer:
-    name: stm32-installer on this core
+  # each installer's whole suite too, with this core in place of the one it
+  # pins, so it cannot break an installer without this failing first.
+  installers:
+    name: ${{ matrix.installer }} on this core
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        installer: [stm32-installer, zephyr-installer]
+
     steps:
       - uses: actions/checkout@v7
         with:
@@ -42,8 +47,8 @@ jobs:
 
       - uses: actions/checkout@v7
         with:
-          repository: nimaltd/stm32-installer
-          path: stm32-installer
+          repository: nimaltd/${{ matrix.installer }}
+          path: installer
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -51,11 +56,11 @@ jobs:
 
       - name: Put this core in its place
         run: |
-          rm -rf stm32-installer/src/core
-          mkdir stm32-installer/src/core
-          cp core/*.py stm32-installer/src/core/
+          rm -rf installer/src/core
+          mkdir installer/src/core
+          cp core/*.py installer/src/core/
 
       - name: Test
         run: |
           python -m pip install --upgrade pip pytest PyYAML
-          python stm32-installer/test/run_tests.py
+          python installer/test/run_tests.py

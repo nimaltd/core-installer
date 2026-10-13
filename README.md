@@ -102,7 +102,7 @@ A `Finding` is one line under **Requirements**: `OK`, `WARN` or `INFO`, a messag
 python test/run_tests.py
 ```
 
-The tests load this folder as the package `core_installer`, with a target of its own that registers nothing, so they cover the core alone. What every installer does with it is tested in the installer. CI runs both: these tests, and the whole of stm32-installer's suite with this core in place of its own.
+The tests load this folder as the package `core_installer`, with a target of its own that registers nothing, so they cover the core alone. What every installer does with it is tested in the installer. CI runs these tests, and the whole suite of every installer, stm32-installer and zephyr-installer, with this core in place of its own.
 
 ---
 
