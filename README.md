@@ -47,6 +47,12 @@ class Example(Target):
     no_project = "No project file was recognised here."  # said when nothing matched
     no_project_hint = "Add the folder to your build."    # and what to do instead
 
+    def add_arguments(self, parser):
+        """Command line options of its own, added to the core's argparse parser."""
+
+    def take_arguments(self, args, ask):
+        """What they were given as. ask(prompt) asks the user, None when nobody can answer."""
+
     def default_folder(self, library):
         """The folder offered for a library installed for the first time."""
         return library.name

@@ -84,6 +84,18 @@ class Target:
         """The line that updates this installer."""
         return f"pip install --upgrade {self.name}"
 
+    def add_arguments(self, parser):
+        """Command line options of this installer's own, added to the core's."""
+
+    def take_arguments(self, args, ask):
+        """
+        What this installer's own options were given as, before anything runs.
+
+        ask(prompt) puts a question to the user and returns what was typed, or
+        None when nobody is there to answer, so a question is asked only when
+        it can be.
+        """
+
     def default_folder(self, library):
         """The folder offered for a library installed for the first time."""
         return library.name

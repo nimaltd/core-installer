@@ -78,3 +78,50 @@ def test_the_default_target_keeps_the_old_answers(library, project):
 
     assert target.Target().requires_key == "installer"
     assert cli._default_folder(lib, project()) == "demo"
+
+
+class _Asking(target.Target):
+    """An installer with a --flavour of its own, which asks when it is not given."""
+
+    name = "asking-installer"
+    version = "1.0.0"
+    record_name = ".asking-installer.json"
+
+    def __init__(self):
+        self.flavour = None
+
+    def add_arguments(self, parser):
+        parser.add_argument("--flavour", default=None)
+
+    def take_arguments(self, args, ask):
+        self.flavour = args.flavour or ask("Flavour? ") or "plain"
+
+
+def test_an_installer_adds_options_of_its_own(monkeypatch, capsys):
+    chosen = _Asking()
+    monkeypatch.setattr(target, "current", chosen)
+
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+
+    assert "--flavour" in capsys.readouterr().out
+
+    assert cli.main(["--flavour", "mint"]) == 2
+    assert chosen.flavour == "mint"
+
+
+def test_an_installer_can_ask_when_its_option_is_not_given(monkeypatch):
+    chosen = _Asking()
+    monkeypatch.setattr(target, "current", chosen)
+    monkeypatch.setattr(cli, "_answer", lambda prompt: "lemon" if prompt == "Flavour? " else None)
+
+    cli.main([])
+
+    assert chosen.flavour == "lemon"
+
+
+def test_the_default_target_adds_no_options(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+
+    assert "--flavour" not in capsys.readouterr().out

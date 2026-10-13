@@ -440,14 +440,14 @@ def _stage_folder(folder, project_root):
     return _Source(root)
 
 
-def _stage(target, ref, project_root, local=False):
+def _stage(given, ref, project_root, local=False):
     """
     Get one library named on the command line onto disk.
 
     Returns a _Source, or None once the reason it could not be had is printed.
     """
-    if not target.startswith(("http://", "https://")):
-        path = Path(target).expanduser()
+    if not given.startswith(("http://", "https://")):
+        path = Path(given).expanduser()
         kind = _kind(path)
 
         if kind == "zip":
@@ -466,19 +466,19 @@ def _stage(target, ref, project_root, local=False):
 
         if kind == "file":
             _error(
-                f"{target} is not a .zip. Give the zip GitHub offers under "
+                f"{given} is not a .zip. Give the zip GitHub offers under "
                 "Code, Download ZIP, or the folder it unpacks to."
             )
             return None
 
-        if local or _looks_like_path(target):
-            _error(f"{target} does not exist.")
+        if local or _looks_like_path(given):
+            _error(f"{given} does not exist.")
             return None
 
-    print(console.note(f"Fetching {target} ..."))
+    print(console.note(f"Fetching {given} ..."))
 
     try:
-        staged = download.fetch(target, ref=ref)
+        staged = download.fetch(given, ref=ref)
     except download.DownloadError as error:
         _error(error)
         return None
@@ -754,8 +754,11 @@ def _run(args, parser, library_root):
     try:
         requested = []
 
-        for target in targets:
-            source = _stage(target, args.ref, project_root, local=target == args.local)
+        # Not called target, which is the module: a local of that name hid it
+        # from the whole function, and a run with nothing to install crashed
+        # on the line that says so.
+        for given in targets:
+            source = _stage(given, args.ref, project_root, local=given == args.local)
 
             if source is None:
                 return 2
@@ -859,6 +862,8 @@ def main(argv=None, library_root=None):
             choices=list(installer_.integrations),
             help="only register with this IDE. Default is every one found.",
         )
+    # Whatever else this installer offers, such as a file of its own to edit.
+    installer_.add_arguments(parser)
     # -V as well, because that is what pip and python answer to.
     parser.add_argument(
         "-V",
@@ -869,6 +874,7 @@ def main(argv=None, library_root=None):
     )
 
     args = parser.parse_args(argv)
+    installer_.take_arguments(args, _answer)
 
     try:
         return _run(args, parser, library_root)

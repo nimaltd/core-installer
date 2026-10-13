@@ -311,3 +311,12 @@ def test_the_version_is_shown_and_nothing_else_happens(flag, no_network, capsys)
 # An update to a version that keeps its code in src/.
 # ----------------------------------------------------------------------------
 
+
+
+def test_nothing_to_install_says_how_rather_than_crashing(capsys):
+    """The first thing many people type. It used to end in an UnboundLocalError."""
+    assert cli.main([]) == 2
+
+    err = capsys.readouterr().err
+    assert "say what to install" in err
+    assert "Traceback" not in err

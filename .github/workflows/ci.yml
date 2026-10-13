@@ -51,9 +51,9 @@ jobs:
 
       - name: Put this core in its place
         run: |
-          rm -rf stm32-installer/src/stm32_installer/core
-          mkdir stm32-installer/src/stm32_installer/core
-          cp core/*.py stm32-installer/src/stm32_installer/core/
+          rm -rf stm32-installer/src/core
+          mkdir stm32-installer/src/core
+          cp core/*.py stm32-installer/src/core/
 
       - name: Test
         run: |
