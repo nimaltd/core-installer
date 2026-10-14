@@ -249,3 +249,83 @@ def test_neither_branch_names_both(github, tmp_path):
 
     assert "main or master" in str(raised.value)
     assert "GITHUB_TOKEN" in str(raised.value)
+
+
+# ----------------------------------------------------------------------------
+# A token given with --key, and one that cannot read
+# ----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def key():
+    """A token given with --key for one test, and none after it."""
+    yield download.use_token
+    download.use_token(None)
+
+
+def test_a_key_comes_before_the_environment(github, monkeypatch, key, tmp_path):
+    monkeypatch.setenv("GITHUB_TOKEN", "from-env")
+    key("from-key")
+
+    download.fetch("someone/private", destination=tmp_path / "lib")
+
+    assert all(headers.get("Authorization") == "Bearer from-key" for _, headers in github.seen)
+
+
+def test_a_blank_key_is_no_key(github, key, tmp_path):
+    key("   ")
+
+    download.fetch("someone/demo", destination=tmp_path / "lib")
+
+    assert all("Authorization" not in headers for _, headers in github.seen)
+
+
+def test_a_token_that_can_see_but_not_read_says_how_to_fix_it(monkeypatch, key, tmp_path):
+    """A fine-grained token with the repository chosen and only Metadata, the usual mistake."""
+
+    def refuse(request, timeout=None):
+        raise urllib.error.HTTPError(request.full_url, 403, "Forbidden",
+                                     {"X-Accepted-GitHub-Permissions": "contents=read"}, None)
+
+    monkeypatch.setattr(download._OPENER, "open", refuse)
+    key("t0ken")
+
+    with pytest.raises(download.DownloadError) as raised:
+        download.fetch("someone/private", destination=tmp_path / "lib")
+
+    message = str(raised.value)
+    assert message.startswith("The token given with --key can see someone/private, but cannot read its files")
+    assert download.TOKENS_PAGE in message
+    assert "set Contents to Read-only" in message
+    assert "t0ken" not in message
+
+
+def test_a_token_that_cannot_see_the_repository_says_where_to_add_it(github, key, tmp_path):
+    key("t0ken")
+    github.files = {}
+
+    with pytest.raises(download.DownloadError) as raised:
+        download.fetch("someone/hidden", destination=tmp_path / "lib")
+
+    assert "the token given with --key cannot see it: add it under the token's Repository access" in str(raised.value)
+
+
+def test_without_a_token_a_private_repository_points_at_key(github, tmp_path):
+    github.files = {}
+    with pytest.raises(download.DownloadError) as raised:
+        download.fetch("someone/hidden", destination=tmp_path / "lib")
+
+    assert "give a token that can read it with --key, or in GITHUB_TOKEN" in str(raised.value)
+
+
+def test_key_on_the_command_line_is_used_for_that_run_only(monkeypatch):
+    from core_installer import cli
+
+    for name in download.TOKEN_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+
+    cli.main(["--key", "abc"])
+    assert download._token() == ("--key", "abc")
+
+    cli.main([])
+    assert download._token() == (None, None)

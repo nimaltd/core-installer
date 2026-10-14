@@ -10,13 +10,14 @@ You do not install this yourself. Install one of the installers, and this comes 
 
 ## What it does
 
-- **Fetches a library** from GitHub by `owner/name`, from a GitHub address, from the zip GitHub's **Download ZIP** gives, or from a folder. A bad connection is tried again, five times across two GitHub hosts, and a private repository is read with a token from `GITHUB_TOKEN`.
+- **Fetches a library** from GitHub by `owner/name`, from a GitHub address, from the zip GitHub's **Download ZIP** gives, or from a folder. A bad connection is tried again, five times across two GitHub hosts, and a private repository is read with a token given with `--key` or in `GITHUB_TOKEN`. A token that can see the repository but not read it is told exactly which permission to add.
 - **Reads the library's `installer.yml`**: what it is, what it needs, and which files make it up.
 - **Installs what a library needs first.** A library listed under `requires.libraries` that is missing or too old goes in before it. One already in the project at a version that will do is left alone. Everything is fetched before anything is installed, so a library that cannot be had leaves the project as it was.
 - **Asks about options**, the parts of a library a project may or may not want.
 - **Copies the files** into the project, and keeps what the user wrote between `USER CODE BEGIN` and `USER CODE END` on every update.
 - **Remembers what it installed**, and where, in a record file in the project, so an update knows what to replace and what to remove.
-- **Runs the command line**: the questions, the output, `--ref`, `--dir`, `--with` and `--without`.
+- **Uninstalls a library** with `--uninstall`: out of the build through the installer's `Target`, then its files, saving first what the user wrote in them. A library another one needs stays.
+- **Runs the command line**: the questions, the output, `--ref`, `--dir`, `--with`, `--without`, `--key` and `--uninstall`.
 
 What a project looks like, the requirements checked against it, and how a library is registered with its build, are the installer's own. The core asks for them through a `Target`.
 
@@ -24,10 +25,18 @@ What a project looks like, the requirements checked against it, and how a librar
 
 ## For someone writing an installer
 
-Each installer takes this repository in whole as a git submodule, at `src/<package>/core`, so the core is built into the installer's own wheel. The installer then still installs from one file, with no internet and nothing else to fetch.
+Each installer takes this repository in whole as a git submodule, at `src/core`, so the core is built into the installer's own wheel. The installer then still installs from one file, with no internet and nothing else to fetch.
 
 ```bash
-git submodule add https://github.com/nimaltd/core-installer.git src/example_installer/core
+git submodule add https://github.com/nimaltd/core-installer.git src/core
+```
+
+The installer's package is the `src` folder itself, mapped in its `pyproject.toml`, with the core listed beside it:
+
+```toml
+[tool.setuptools]
+package-dir = { "example_installer" = "src" }
+packages = ["example_installer", "example_installer.core"]
 ```
 
 It describes its kind of project in a `Target`, and hands it to the core before anything else runs, in the package's `__init__.py`:
@@ -78,6 +87,10 @@ class Example(Target):
     def integrate(self, project_root, library, destination, only=None, dropped=(),
                   dropped_defines=()):
         """Register the library with the project's build. A list of Outcome."""
+        return []
+
+    def uninstall(self, project_root, library):
+        """Take it out of the build again, before its files go. A list of Outcome."""
         return []
 
 

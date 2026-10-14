@@ -8,9 +8,9 @@ first, then each listed file is fetched on its own. For a library whose repo
 carries a vendored test framework, that is the difference between a few hundred
 kilobytes and a few.
 
-A private repository needs a GitHub token that can read it, in GITHUB_TOKEN or
-GH_TOKEN. With one, every file comes from the API rather than from
-raw.githubusercontent, which cannot see a private repository at all.
+A private repository needs a GitHub token that can read it: given with --key,
+or in GITHUB_TOKEN or GH_TOKEN. With one, every file comes from the API rather
+than from raw.githubusercontent, which cannot see a private repository at all.
 """
 
 import http.client
@@ -46,11 +46,17 @@ TIMEOUT_SECONDS = 30
 # kept closing the connection part way through an install.
 ATTEMPTS = 5
 
-# Where a token is looked for, in this order. GitHub Actions sets the first and
-# the gh command reads the second, so a machine set up for either works as it
-# is. Never an option on the command line, where it would stay in the shell's
-# history.
+# Where a token is looked for, after --key, in this order. GitHub Actions sets
+# the first and the gh command reads the second, so a machine set up for either
+# works as it is.
 TOKEN_VARIABLES = ("GITHUB_TOKEN", "GH_TOKEN")
+
+# Where the user makes and edits a fine-grained token, named in every message
+# about one that cannot read.
+TOKENS_PAGE = "https://github.com/settings/personal-access-tokens"
+
+# The token given with --key for this run, which comes before the environment.
+_given = None
 
 # The file as it is, not wrapped in JSON and base64 the way the API hands a file
 # out by default.
@@ -103,8 +109,17 @@ class _SameHostRedirect(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_SameHostRedirect)
 
 
+def use_token(token):
+    """Use this token for the rest of the run, before any in the environment. None for none."""
+    global _given
+    _given = token.strip() if token and token.strip() else None
+
+
 def _token():
-    """(variable, token) for the first token set in the environment, or (None, None)."""
+    """(where, token) for the token to use, from --key or the environment, or (None, None)."""
+    if _given:
+        return "--key", _given
+
     for name in TOKEN_VARIABLES:
         value = os.environ.get(name, "").strip()
 
@@ -170,21 +185,51 @@ def _get(url, token, accept):
         return response.read()
 
 
+def _named(where):
+    """The token, as a message names it: the one given with --key, or the one in a variable."""
+    return "the token given with --key" if where == "--key" else f"the token in {where}"
+
+
+def _wants(error):
+    """The permissions GitHub said the request needs, such as contents=read, or ""."""
+    headers = getattr(error, "headers", None)
+
+    return (headers.get("X-Accepted-GitHub-Permissions", "") if headers is not None else "") or ""
+
+
 def _report(error, owner, repo, ref, path, variable, token):
     """Raise the DownloadError that says, in words, what went wrong with one file."""
     if isinstance(error, urllib.error.HTTPError):
         if error.code == 401 and token:
             raise DownloadError(
-                f"GitHub did not accept the token in {variable}. It may have expired, or been revoked."
+                f"GitHub did not accept {_named(variable)}. It may have expired, been revoked, "
+                f"or been copied with a character missing. Make a new one at {TOKENS_PAGE}."
+            ) from error
+
+        # The usual mistake with a fine-grained token: the repository is chosen,
+        # so the token can see it, but its files need a permission of their own,
+        # and GitHub says which in a header.
+        if error.code == 403 and token and "contents=read" in _wants(error):
+            raise DownloadError(
+                f"{_named(variable)[0].upper()}{_named(variable)[1:]} can see {owner}/{repo}, but cannot "
+                f"read its files: GitHub wants the Contents permission, and the token has only Metadata.\n"
+                f"Edit the token, and its value stays the same, so nothing else changes:\n"
+                f"  1. Open {TOKENS_PAGE} and click the token's name.\n"
+                f"  2. Click Edit.\n"
+                f"  3. In Permissions, set Contents to Read-only. In the older layout that is under\n"
+                f"     Repository permissions; in the newer one, click + Add permissions and tick Contents.\n"
+                f"  4. Click Update at the bottom of the page.\n"
+                f"Then run this again as it was."
             ) from error
 
         if error.code == 403:
             raise DownloadError(
                 f"GitHub refused access to {owner}/{repo} (HTTP 403)"
                 + (
-                    f" with the token in {variable}. It may not be allowed to read this repository."
+                    f" with {_named(variable)}. It may not be allowed to read this repository: "
+                    f"check its Repository access and its Contents permission at {TOKENS_PAGE}."
                     if token else
-                    ". That is usually its limit on requests without a token: wait, or set GITHUB_TOKEN."
+                    ". That is usually its limit on requests without a token: wait, or give one with --key."
                 )
             ) from error
 
@@ -246,9 +291,12 @@ def _listed_entries(data):
 def _private_hint(variable, token):
     """What to say when a manifest is not found, in case the repository is private."""
     if token:
-        return f" If the repository is private, the token in {variable} cannot read it."
+        return (
+            f" If the repository is private, {_named(variable)} cannot see it: add it under the "
+            f"token's Repository access at {TOKENS_PAGE}."
+        )
 
-    return " If the repository is private, set GITHUB_TOKEN to a token that can read it."
+    return " If the repository is private, give a token that can read it with --key, or in GITHUB_TOKEN."
 
 
 def _manifest(owner, repo, ref):

@@ -18,9 +18,13 @@ What is supported, which is everything the manifest format uses:
     # comments                  to end of line
     'quoted' and "quoted"       strings
     true false yes no null      the scalars PyYAML resolves the same way
+    help: |                     block text, kept line for line, with |- and |+
+      Two lines,                to say what happens to the line endings at its
+      kept as they are.         end; > folds the lines into one, the same way
 
 What is not supported, because no manifest needs it: anchors and aliases,
-multiple documents, block scalars (| and >), flow mappings, and complex keys.
+multiple documents, flow mappings, complex keys, and a block of text with an
+indentation number or with lines indented deeper inside a folded one.
 Anything unsupported raises YamlError naming the line, rather than being guessed
 at, because a wrong guess would be far worse than a refusal.
 """
@@ -29,6 +33,10 @@ import re
 
 # A quoted scalar, so a "#" inside quotes is not mistaken for a comment.
 _QUOTED = re.compile(r"""^(?P<quote>['"])(?P<body>.*)(?P=quote)$""")
+
+# A line whose value is a block of text on the lines below it: "help: |",
+# "- |" or "- help: >-". The style and the chomping, nothing after them.
+_BLOCK = re.compile(r"(?:^-|^-?.*?:)[ \t]+(?P<style>[|>])(?P<chomp>[-+]?)$")
 
 _TRUE = {"true", "yes", "on"}
 _FALSE = {"false", "no", "off"}
@@ -46,6 +54,8 @@ class _Line:
         self.number = number
         self.text = raw.strip()
         self.indent = len(raw) - len(raw.lstrip(" "))
+        # The text of a block scalar this line introduces, read in _clean.
+        self.block = None
 
     def __repr__(self):
         return f"_Line({self.number}, {self.indent}, {self.text!r})"
@@ -73,18 +83,108 @@ def _strip_comment(raw):
     return "".join(out).rstrip()
 
 
-def _clean(text):
-    """Meaningful lines only, comments and blanks dropped."""
-    lines = []
+def _block_text(raws, start, indent, style, chomp, number):
+    """
+    The text of a block scalar whose lines start at raws[start], as PyYAML
+    reads it, and the index of the first line after it.
 
-    for number, raw in enumerate(text.replace("\r\n", "\n").split("\n"), 1):
+    Its lines are every one indented deeper than the line that introduced it,
+    and the blank ones among them, taken as they are: a "#" in them is text,
+    not a comment.
+    """
+    end = start
+    while end < len(raws) and (not raws[end].strip() or len(raws[end]) - len(raws[end].lstrip(" ")) > indent):
+        end += 1
+
+    body = raws[start:end]
+    content = [line for line in body if line.strip()]
+
+    # A block that is all blank lines, or none, is empty.
+    if not content:
+        return "", end
+
+    depth = len(content[0]) - len(content[0].lstrip(" "))
+
+    for offset, line in enumerate(body):
+        if line.strip() and len(line) - len(line.lstrip(" ")) < depth:
+            raise YamlError(f"line {number + 1 + offset}: indented less than the first line of its block")
+
+    lines = [line[depth:] if line.strip() else "" for line in body]
+
+    # The blank lines at the end belong to the chomping, not to the text.
+    while lines and not lines[-1]:
+        lines.pop()
+
+    if style == "|":
+        text = "\n".join(lines)
+    else:
+        if any(line.startswith((" ", "\t")) for line in lines):
+            raise YamlError(f"line {number}: a folded block with lines indented deeper is not supported")
+
+        # Folded: a line break between two lines of text becomes a space, and
+        # each blank line between them stays a line break.
+        text = ""
+        for index, line in enumerate(lines):
+            if index == 0:
+                text = line
+            elif line == "":
+                text += "\n"
+            elif lines[index - 1] == "":
+                text += line
+            else:
+                text += " " + line
+
+    if chomp == "-":
+        return text, end
+
+    if chomp == "+":
+        blank = 0
+        for line in reversed(body):
+            if line.strip():
+                break
+            blank += 1
+
+        return text + "\n" + "\n" * blank, end
+
+    return text + "\n", end
+
+
+def _clean(text):
+    """Meaningful lines only, comments and blanks dropped, and each block of text read whole."""
+    lines = []
+    raws = text.replace("\r\n", "\n").split("\n")
+    index = 0
+
+    while index < len(raws):
+        number, raw = index + 1, raws[index]
+        index += 1
+
         if "\t" in raw[: len(raw) - len(raw.lstrip())]:
             raise YamlError(f"line {number}: indented with a tab, which YAML forbids")
 
         stripped = _strip_comment(raw)
 
-        if stripped.strip():
-            lines.append(_Line(number, stripped))
+        if not stripped.strip():
+            continue
+
+        line = _Line(number, stripped)
+        found = _BLOCK.search(line.text)
+
+        if found:
+            # Its text is indented deeper than the key it belongs to, which in
+            # "- help: |" stands after the dash, not at it.
+            parent = line.indent
+            rest = line.text[1:]
+
+            if line.text.startswith("- ") and _split_key(_Line(number, rest.strip()))[0] is not None:
+                parent = line.indent + 1 + len(rest) - len(rest.lstrip())
+
+            # The line keeps a placeholder of its own form, and the block it
+            # introduces is read here, before comments and blanks are dropped.
+            line.block, index = _block_text(raws, index, parent, found.group("style"),
+                                            found.group("chomp"), number)
+
+        lines.append(line)
 
     return lines
 
@@ -206,7 +306,7 @@ def _parse_mapping(lines, index, indent):
             raise YamlError(f"line {line.number}: expected 'key: value', found {line.text!r}")
 
         if value:
-            result[key] = _scalar(value)
+            result[key] = line.block if line.block is not None else _scalar(value)
             index += 1
             continue
 
@@ -233,7 +333,7 @@ def _parse_sequence(lines, index, indent):
         key, value = _split_key(_Line(line.number, content))
 
         if key is None:
-            result.append(_scalar(content))
+            result.append(line.block if line.block is not None else _scalar(content))
             index += 1
             continue
 
@@ -243,6 +343,7 @@ def _parse_sequence(lines, index, indent):
         item_indent = indent + 2
         block = [_Line(line.number, content)]
         block[0].indent = item_indent
+        block[0].block = line.block
 
         index += 1
         while index < len(lines) and lines[index].indent >= item_indent:

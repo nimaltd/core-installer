@@ -166,3 +166,43 @@ def test_parse_falls_back_when_pyyaml_is_missing(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", no_yaml)
 
     assert yamlreader.parse(REAL_MANIFEST)["name"] == "fsm"
+
+
+# ----------------------------------------------------------------------------
+# Blocks of text, | and >, as zephyr.settings help uses them
+# ----------------------------------------------------------------------------
+
+BLOCKS = [
+    "help: |\n  One line.\n",
+    "help: |\n  Two lines,\n  kept as they are.\nnext: 1\n",
+    "help: |-\n  No line ending at the end.\nnext: 1\n",
+    "help: |+\n  Every blank line at the end kept.\n\n\nnext: 1\n",
+    "help: |\n  Blank lines at the end dropped.\n\n\nnext: 1\n",
+    "help: |\n  A # is text here, not a comment.\n  # and so is this line.\n",
+    "help: |\n  First paragraph.\n\n  Second paragraph.\n",
+    "help: |\n  Text\n    indented deeper\n  and back.\n",
+    "help: >\n  Folded into\n  one line.\n",
+    "help: >-\n  Folded, and\n  no ending.\nnext: 1\n",
+    "help: >\n  Two\n  paragraphs.\n\n  Folded\n  each.\n",
+    "help: |\nnext: 1\n",
+    "settings:\n  - name: A\n    help: |\n      For A.\n      Second line.\n    type: int\n  - name: B\n    help: >-\n      For B.\n",
+    "settings:\n  - help: |\n      First key of the item.\n    name: A\n",
+    "list:\n  - |\n    A block as an item.\n  - plain\n",
+    "outer:\n  inner:\n    help: |\n      Deep.\n  after: 2\n",
+    "help: |  # a comment after the indicator\n  Text.\n",
+]
+
+
+@pytest.mark.parametrize("text", BLOCKS)
+def test_blocks_of_text_match_pyyaml(text):
+    assert yamlreader.loads(text) == pyyaml.safe_load(text)
+
+
+def test_a_block_indented_less_than_its_first_line_is_refused():
+    with pytest.raises(yamlreader.YamlError):
+        yamlreader.loads("outer:\n  help: |\n      Deep first.\n    then shallower.\n")
+
+
+def test_a_folded_block_with_deeper_lines_is_refused_not_guessed():
+    with pytest.raises(yamlreader.YamlError):
+        yamlreader.loads("help: >\n  Text\n    deeper\n")

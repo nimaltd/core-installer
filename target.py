@@ -123,6 +123,16 @@ class Target:
         """Register an installed library with the project. Returns a list of Outcome."""
         return []
 
+    def uninstall(self, project_root, library):
+        """
+        Take a library out of the project's build, before its files go.
+
+        library is an installer.Installed: its name, its folder, its compiled
+        files and its defines, as the record remembers them. Returns a list of
+        Outcome.
+        """
+        return []
+
 
 current = Target()
 

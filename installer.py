@@ -24,7 +24,7 @@ from pathlib import Path
 
 from . import target, usercode
 from .files import backup
-from .manifest import DEFINE
+from .manifest import COMPILED, DEFINE
 
 # What a library repository carries that a firmware project must not.
 #
@@ -623,6 +623,9 @@ def _record(project_root, library, result):
             _relative(p, project_root): value for p, value in sorted(result.fingerprints.items())
         },
         "defines": list(library.defines),
+        # The libraries this one needs, so an uninstall can refuse to take
+        # one out from under another, and say which are no longer needed.
+        "needs": sorted({dependency.name for dependency in library.dependencies}),
         # Every option offered, and whether it was taken. One the record does
         # not name is new to this project, and is asked about.
         "options": {name: name in library.chosen for name in library.options},
@@ -634,6 +637,207 @@ def _record(project_root, library, result):
     except OSError:
         # A read-only project root is unusual, but it must not fail a good install.
         pass
+
+
+class Installed:
+    """
+    A library as the record remembers it, which is all an uninstall has.
+
+    The record is a file in the user's project that anyone can edit, so what
+    comes from it is checked as it is read: a path that would lead out of the
+    library's folder is dropped, never deleted, and a define that could not
+    have come from a manifest is ignored.
+    """
+
+    def __init__(self, project_root, name, entry):
+        root = Path(project_root).resolve()
+        self.name = name
+        self.version = str(entry.get("version") or "")
+        self.folder = entry.get("folder") if isinstance(entry.get("folder"), str) else None
+        self.destination = (root / self.folder).resolve() if self.folder else None
+        self.needs = [str(n) for n in entry.get("needs") or [] if isinstance(n, str)]
+        self.defines = [d for d in entry.get("defines") or [] if isinstance(d, str) and DEFINE.match(d)]
+        self.files = self._inside(root, entry.get("files"))
+        self.once = self._inside(root, entry.get("once"))
+        self.entry = entry
+
+    def _inside(self, root, listed):
+        """The recorded paths that are files of this library's folder."""
+        if self.destination is None or not isinstance(listed, list):
+            return []
+
+        found = []
+
+        for relative in listed:
+            if not isinstance(relative, str):
+                continue
+
+            try:
+                path = (root / relative).resolve()
+            except OSError:
+                continue
+
+            if _within(path, self.destination) and _within(path, root):
+                found.append(path)
+
+        return found
+
+    @property
+    def compiled(self):
+        """The files a compiler takes, as posix names inside the library's folder."""
+        return [
+            path.relative_to(self.destination).as_posix()
+            for path in self.files + self.once
+            if path.suffix.lower() in COMPILED
+        ]
+
+
+class Removal:
+    """What an uninstall did, so the caller can report it honestly."""
+
+    def __init__(self, library):
+        self.library = library
+        self.removed = []
+        # (file, backup, reason) for each file of the user's put aside first.
+        self.backups = []
+        # Files in the library's folder the record does not name: the user's own.
+        self.left = []
+        self.folder_removed = False
+        # Outcomes of taking it out of the project's build, from the target.
+        self.outcomes = []
+        # Libraries it needed that nothing left in the project needs any more.
+        self.unneeded = []
+
+
+def uninstall(project_root, name):
+    """
+    Take a library out of a project: out of its build, its files, and the record.
+
+    What the user wrote in its files is not lost. A file of the user's own, a
+    configuration file the library created or one with something written in
+    its USER CODE sections or changed by hand, is copied aside before it goes,
+    as an update does. A file the library never installed is left where it is,
+    and with it the folder.
+
+    Raises:
+        InstallError when the library is not installed, or another one needs it.
+    """
+    root = Path(project_root).resolve()
+    installed = installed_libraries(root)
+    entry = installed.get(name)
+
+    if not isinstance(entry, dict):
+        known = ", ".join(sorted(installed)) or "nothing"
+        raise InstallError(
+            f"{name} is not installed in this project. {target.current.record_name} has {known}."
+        )
+
+    needed_by = sorted(
+        other for other, data in installed.items()
+        if other != name and isinstance(data, dict) and name in (data.get("needs") or [])
+    )
+
+    if needed_by:
+        raise InstallError(
+            f"{', '.join(needed_by)} {'needs' if len(needed_by) == 1 else 'need'} {name}, so it stays. "
+            f"Uninstall {' and '.join(needed_by)} first, or name them all on one line."
+        )
+
+    library = Installed(root, name, entry)
+    removal = Removal(library)
+
+    # Defines another library still asks for stay in the project.
+    others = {d for other, data in installed.items() if other != name and isinstance(data, dict)
+              for d in data.get("defines") or []}
+    library.defines = [d for d in library.defines if d not in others]
+
+    # Out of the build first: a project file still naming a file that is gone
+    # fails the build, where one naming a file still there does not.
+    removal.outcomes = target.current.uninstall(root, library)
+
+    for path in library.files + library.once:
+        if not path.is_file():
+            continue
+
+        reason = "it was yours to edit" if path in library.once else _what_is_yours(path, entry, root)
+
+        try:
+            if reason:
+                removal.backups.append((path, backup(path), reason))
+
+            _unlink(path)
+        except OSError:
+            continue
+
+        removal.removed.append(path)
+        _prune(path.parent, library.destination)
+
+    if library.destination is not None and library.destination.is_dir():
+        removal.left = sorted(p for p in library.destination.rglob("*") if p.is_file())
+
+        if not removal.left:
+            try:
+                library.destination.rmdir()
+                removal.folder_removed = True
+            except OSError:
+                pass
+
+    _forget(root, name)
+
+    still = {need for other, data in installed.items() if other != name and isinstance(data, dict)
+             for need in data.get("needs") or []}
+    removal.unneeded = [need for need in library.needs if need in installed and need not in still]
+
+    return removal
+
+
+def _what_is_yours(path, entry, project_root):
+    """
+    Why a library file is saved before an uninstall removes it, or None.
+
+    Only the library's code is asked. An extra, a README for one, is copied as
+    it is and has no fingerprint in the record, and one that shows USER CODE
+    lines as an example must not be taken for the user's work.
+    """
+    known = entry.get("fingerprints")
+    relative = _relative(path, project_root)
+
+    if not isinstance(known, dict) or relative not in known:
+        return None
+
+    try:
+        data = path.read_bytes()
+        lines, sections = usercode.parse(data)
+    except usercode.MarkerError:
+        return "its USER CODE markers do not pair, so what is yours in it cannot be told apart"
+    except OSError:
+        return None
+
+    if usercode.fingerprint(data) != known[relative]:
+        return "it was changed outside its USER CODE sections"
+
+    if any(b"".join(lines[first:last]).strip() for first, last in sections.values()):
+        return "it has something between its USER CODE lines, such as your settings"
+
+    return None
+
+
+def _forget(project_root, name):
+    """Take one library out of the record of what was installed."""
+    path = Path(project_root) / target.current.record_name
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+
+    if isinstance(data, dict) and isinstance(data.get("libraries"), dict):
+        data["libraries"].pop(name, None)
+
+        try:
+            path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        except OSError:
+            pass
 
 
 def _relative(path, root):

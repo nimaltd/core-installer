@@ -243,6 +243,11 @@ def _print_ide(outcomes):
         print(console.note("  " + target.current.no_project_hint))
         return
 
+    _print_outcomes(outcomes)
+
+
+def _print_outcomes(outcomes):
+    """Each project file changed, or left for the user, under its heading."""
     print()
     print(console.heading("Project"))
 
@@ -329,6 +334,91 @@ def _finish(library, result, project_root, only_ide):
                                           dropped_defines=result.dropped_defines)
     _print_ide(outcomes)
     _print_next(result, project_root, library)
+
+    return 0
+
+
+def _uninstall_order(names, project_root):
+    """
+    The libraries to take out, each before any of the others it needs.
+
+    ee24 needs osal, so "--uninstall osal ee24" takes ee24 out first, and osal
+    is then needed by nothing. A circle, which the record should never hold,
+    keeps the order given.
+    """
+    installed = installer.installed_libraries(project_root)
+    left = list(dict.fromkeys(names))
+    order = []
+
+    while left:
+        ready = [name for name in left
+                 if not any(name in (installed.get(other) or {}).get("needs", []) for other in left if other != name)]
+        step = ready[0] if ready else left[0]
+        order.append(step)
+        left.remove(step)
+
+    return order
+
+
+def _print_removal(removal, root):
+    """What an uninstall did, and what it left."""
+    library = removal.library
+    folder = _show(library.destination, root) if library.destination else ""
+
+    print()
+    print(console.banner(library.name, library.version, f"out of {folder}"))
+
+    if removal.outcomes:
+        _print_outcomes(removal.outcomes)
+
+    print()
+    print(console.heading("Files"))
+
+    for path in removal.removed:
+        print(console.item("removed", "", _show(path, root), console.YELLOW))
+
+    for path, saved, reason in removal.backups:
+        print(console.item("saved", "", f"{_show(saved, root)}  {console.warn(reason)}", console.CYAN))
+
+    saved = {copy for _, copy, _ in removal.backups}
+    others = [path for path in removal.left if path not in saved]
+
+    for path in others:
+        print(console.item("kept", "not the library's", _show(path, root), console.CYAN))
+
+    print()
+    print(console.good(f"Done. {library.name} is out of the project."))
+
+    if not removal.folder_removed and library.destination is not None and library.destination.is_dir():
+        if others:
+            print(console.note(f"{folder} stays, for the files above that were not the library's."))
+        else:
+            print(console.note(f"{folder} stays, for what was saved above. Delete it once you have "
+                               "taken what you need."))
+
+    for name in removal.unneeded:
+        print(console.note(
+            f"{name} came in for {library.name}, and nothing here needs it now. "
+            f"Take it out too with: {target.current.name} --uninstall {name}"
+        ))
+
+
+def _uninstall(args):
+    """Take the libraries named after --uninstall out of the project. Returns an exit code."""
+    project_root = Path(args.project).resolve() if args.project else Path.cwd().resolve()
+
+    if args.library or args.local:
+        _error("--uninstall takes libraries out. Install on a run of its own.")
+        return 2
+
+    for name in _uninstall_order(args.uninstall, project_root):
+        try:
+            removal = installer.uninstall(project_root, name)
+        except installer.InstallError as error:
+            _error(error)
+            return 2
+
+        _print_removal(removal, project_root)
 
     return 0
 
@@ -851,6 +941,23 @@ def main(argv=None, library_root=None):
     parser.add_argument(
         "--project", default=None, help=f"root of your {installer_.project}. Defaults to this folder."
     )
+    parser.add_argument(
+        "--key",
+        "--token",
+        dest="key",
+        default=None,
+        metavar="TOKEN",
+        help="a GitHub token, for a library in a private repository. GITHUB_TOKEN works as well, "
+        "and keeps it out of your shell's history. Sent to GitHub and nowhere else.",
+    )
+    parser.add_argument(
+        "--uninstall",
+        nargs="+",
+        default=None,
+        metavar="NAME",
+        help="take these libraries out of the project: their files, and their place in the build. "
+        "What you wrote in them is saved beside them first.",
+    )
     # Before a folder could be given as the plain argument, it took this option.
     # Kept working for anyone who still types it, but no longer advertised.
     parser.add_argument("--local", default=None, help=argparse.SUPPRESS)
@@ -876,7 +983,13 @@ def main(argv=None, library_root=None):
     args = parser.parse_args(argv)
     installer_.take_arguments(args, _answer)
 
+    # For this run only, so a second run in the same process starts clean.
+    download.use_token(args.key)
+
     try:
+        if args.uninstall:
+            return _uninstall(args)
+
         return _run(args, parser, library_root)
     except KeyboardInterrupt:
         # Ctrl+C at the folder question used to mean "take the default" and go
