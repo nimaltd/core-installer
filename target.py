@@ -96,9 +96,42 @@ class Target:
         it can be.
         """
 
+    def project_root(self, given):
+        """
+        The folder this run works in, once take_arguments() has run.
+
+        given is --project, or the folder the command was run from. A target
+        whose libraries live somewhere of their own, such as Arduino's
+        libraries folder, answers with that. Raise installer.InstallError to
+        stop the run with a reason.
+        """
+        return given
+
+    def dependency_root(self, project_root):
+        """
+        The folder a library another one needs is installed into, and looked
+        for in. The project's own, unless the target keeps them elsewhere.
+        """
+        return project_root
+
     def default_folder(self, library):
         """The folder offered for a library installed for the first time."""
         return library.name
+
+    def folder_for(self, library, project_root):
+        """
+        The folder offered for a library installed for the first time into
+        project_root, which is the project, or where dependency_root() keeps
+        what other libraries need.
+        """
+        return self.default_folder(library)
+
+    def include_line(self, library, destination, project_root):
+        """
+        What goes between the quotes of the #include the last line names, or
+        None for the first header, relative to its include folder.
+        """
+        return None
 
     def read_manifest(self, manifest, data):
         """Read this target's own part of installer.yml onto manifest, once the rest is read."""

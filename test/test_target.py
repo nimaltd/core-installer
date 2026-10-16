@@ -2,7 +2,7 @@
 
 import pytest
 
-from core_installer import cli, manifest, target
+from core_installer import cli, download, installer, manifest, target
 
 
 class _Other(target.Target):
@@ -125,3 +125,131 @@ def test_the_default_target_adds_no_options(capsys):
         cli.main(["--help"])
 
     assert "--flavour" not in capsys.readouterr().out
+
+
+class _Split(target.Target):
+    """
+    An installer that keeps what other libraries need in a folder of its own,
+    as arduino-installer does with Arduino's libraries folder.
+    """
+
+    name = "split-installer"
+    version = "1.0.0"
+    record_name = ".split-installer.json"
+
+    def __init__(self, shared, moved_to=None):
+        self.shared = shared
+        self.moved_to = moved_to
+
+    def project_root(self, given):
+        if self.moved_to == "refuse":
+            raise installer.InstallError("not a project of mine")
+
+        return self.moved_to or given
+
+    def dependency_root(self, project_root):
+        return self.shared
+
+    def folder_for(self, library, project_root):
+        return library.name if project_root == self.shared else f"src/{library.name}"
+
+    def include_line(self, library, destination, project_root):
+        return f"{destination.relative_to(project_root).as_posix()}/{library.name}.h"
+
+
+def _needing(library, tmp_path):
+    """demo, which needs helper, both as folders on disk."""
+    helper = library(name="helper", headers=("helper.h",), sources=(), root=tmp_path / "libs" / "helper")
+    demo = library(name="demo", headers=("demo.h",), sources=(), requires={"libraries": ["helper"]},
+                   root=tmp_path / "libs" / "demo")
+
+    return demo, helper
+
+
+def test_what_a_library_needs_goes_where_the_target_keeps_it(library, tmp_path, monkeypatch, capsys):
+    shared = tmp_path / "shared"
+    sketch = tmp_path / "sketch"
+    shared.mkdir()
+    sketch.mkdir()
+    monkeypatch.setattr(target, "current", _Split(shared))
+    monkeypatch.setattr(cli, "_answer", lambda prompt: None)
+    demo, helper = _needing(library, tmp_path)
+
+    assert cli.main([str(demo), str(helper), "--project", str(sketch)]) == 0
+
+    assert (sketch / "src" / "demo" / "demo.h").is_file()
+    assert (shared / "helper" / "helper.h").is_file()
+    assert not (sketch / "src" / "helper").exists()
+    assert "helper" in installer.installed_libraries(shared)
+    assert list(installer.installed_libraries(sketch)) == ["demo"]
+    assert 'Done. #include "src/demo/demo.h"' in capsys.readouterr().out
+
+
+def test_what_is_kept_elsewhere_already_is_not_installed_again(library, tmp_path, monkeypatch, capsys):
+    shared = tmp_path / "shared"
+    sketch = tmp_path / "sketch"
+    shared.mkdir()
+    sketch.mkdir()
+    monkeypatch.setattr(target, "current", _Split(shared))
+    monkeypatch.setattr(cli, "_answer", lambda prompt: None)
+    demo, helper = _needing(library, tmp_path)
+    assert cli.main([str(helper), "--project", str(shared)]) == 0
+
+    assert cli.main([str(demo), "--project", str(sketch)]) == 0
+
+    assert "helper 1.0.0 is already in this project, kept" in capsys.readouterr().out
+    assert not (sketch / "src" / "helper").exists()
+
+
+def test_the_target_can_move_the_run_or_stop_it(library, tmp_path, monkeypatch, capsys):
+    moved = tmp_path / "moved"
+    moved.mkdir()
+    # Run from a folder of the test's own, so a run that does not move writes nothing elsewhere.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(target, "current", _Split(tmp_path / "shared", moved_to=moved))
+    monkeypatch.setattr(cli, "_answer", lambda prompt: None)
+    lib = library(name="solo", headers=("solo.h",), sources=(), root=tmp_path / "libs" / "solo")
+
+    assert cli.main([str(lib)]) == 0
+    assert (moved / "src" / "solo" / "solo.h").is_file()
+    assert cli.main(["--uninstall", "solo"]) == 0
+    assert not (moved / "src" / "solo" / "solo.h").exists()
+
+    target.current.moved_to = "refuse"
+    assert cli.main([str(lib)]) == 2
+    assert cli.main(["--uninstall", "solo"]) == 2
+    assert capsys.readouterr().err.count("not a project of mine") == 2
+
+
+def test_the_default_target_keeps_its_answers_for_the_new_hooks(library, tmp_path):
+    lib = manifest.load(library())
+    plain = target.Target()
+
+    assert plain.project_root(tmp_path) == tmp_path
+    assert plain.dependency_root(tmp_path) == tmp_path
+    assert plain.folder_for(lib, tmp_path) == "demo"
+    assert plain.include_line(lib, tmp_path / "demo", tmp_path) is None
+
+
+def test_a_fetched_dependency_keeps_the_options_recorded_where_it_is_kept(library, tmp_path, monkeypatch,
+                                                                          capsys):
+    shared = tmp_path / "shared"
+    sketch = tmp_path / "sketch"
+    shared.mkdir()
+    sketch.mkdir()
+    monkeypatch.setattr(target, "current", _Split(shared))
+    monkeypatch.setattr(cli, "_answer", lambda prompt: None)
+    extra = {"description": "More", "files": {"headers": ["helper_extra.h"]}}
+    old = library(name="helper", version="1.0.0", headers=("helper.h",), sources=(), options={"extra": extra},
+                  extra_files={"helper_extra.h": "int x;\n"}, root=tmp_path / "v1" / "helper")
+    new = library(name="helper", version="2.0.0", headers=("helper.h",), sources=(), options={"extra": extra},
+                  extra_files={"helper_extra.h": "int x;\n"}, root=tmp_path / "v2" / "helper")
+    demo = library(name="demo", headers=("demo.h",), sources=(), requires={"libraries": ["helper >= 2.0.0"]},
+                   root=tmp_path / "libs" / "demo")
+    monkeypatch.setattr(download, "fetch", lambda source, ref=None, destination=None: new)
+    assert cli.main([str(old), "--project", str(shared), "--with", "extra"]) == 0
+
+    assert cli.main([str(demo), "--project", str(sketch)]) == 0
+
+    assert "extra      yes, as before" in capsys.readouterr().out
+    assert (shared / "helper" / "helper_extra.h").is_file()

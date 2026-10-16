@@ -295,7 +295,7 @@ def _include_name(library):
 def _print_next(result, root, library):
     """The last word, which is the one people actually read."""
     folder = _show(result.destination, root)
-    header = _include_name(library)
+    header = target.current.include_line(library, result.destination, root) or _include_name(library)
 
     print()
 
@@ -403,12 +403,29 @@ def _print_removal(removal, root):
         ))
 
 
+def _project_root(args):
+    """
+    The folder the run works in: --project or the current folder, as the
+    target sees it. Returns None once the reason it cannot be had is printed.
+    """
+    given = Path(args.project).resolve() if args.project else Path.cwd().resolve()
+
+    try:
+        return target.current.project_root(given)
+    except installer.InstallError as error:
+        _error(error)
+        return None
+
+
 def _uninstall(args):
     """Take the libraries named after --uninstall out of the project. Returns an exit code."""
-    project_root = Path(args.project).resolve() if args.project else Path.cwd().resolve()
-
     if args.library or args.local:
         _error("--uninstall takes libraries out. Install on a run of its own.")
+        return 2
+
+    project_root = _project_root(args)
+
+    if project_root is None:
         return 2
 
     for name in _uninstall_order(args.uninstall, project_root):
@@ -650,7 +667,10 @@ def _plan(requested, project_root, staged):
     staged collects every temporary folder made on the way, for the caller to
     remove.
     """
-    recorded = installer.installed_libraries(project_root)
+    # What other libraries need may live somewhere else, such as Arduino's
+    # libraries folder for a library in a sketch.
+    elsewhere = target.current.dependency_root(project_root)
+    recorded = installer.installed_libraries(elsewhere)
     given = {source.library.name: source for source in requested}
     planned = {}
     steps = []
@@ -692,7 +712,10 @@ def _plan(requested, project_root, staged):
             if other is None:
                 other = _fetch_dependency(dependency, name, staged)
                 # Its options before what it needs, since they can bring more.
-                _choose_options(other.library, project_root)
+                _choose_options(other.library, elsewhere)
+
+            if elsewhere != project_root and not other.in_place:
+                other.project_root = elsewhere
 
             if not dependency.satisfied_by(other.library.version):
                 raise _PlanError(
@@ -764,7 +787,7 @@ def _default_folder(library, project_root):
     if isinstance(recorded, dict) and recorded.get("folder"):
         return recorded["folder"]
 
-    return target.current.default_folder(library)
+    return target.current.folder_for(library, project_root)
 
 
 def _install_step(step, project_root, folder, only_ide):
@@ -814,7 +837,10 @@ def _install_step(step, project_root, folder, only_ide):
 
 def _run(args, parser, library_root):
     """Get every library onto disk, work out the order, then install them in it."""
-    project_root = Path(args.project).resolve() if args.project else Path.cwd().resolve()
+    project_root = _project_root(args)
+
+    if project_root is None:
+        return 2
 
     # An install.py from an older release passes the folder it sits in.
     if library_root is not None:
